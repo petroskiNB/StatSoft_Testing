@@ -1,6 +1,7 @@
 """ Потоковое чтение листов XLSX """
 
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
+from .selection import normalize_columns, selected_names
 from contextlib import closing, contextmanager
 from pathlib import Path
 from xml.etree.ElementTree import ParseError
@@ -69,9 +70,11 @@ class XlsxSource:
 
     def iter_chunks(
         self, sheet: str, chunk_size: int = 1000,
+        *, columns: Sequence[str] | None = None,
     ) -> Generator[pd.DataFrame, None, None]:
         """Выдает порции. Пустой лист даёт один пустой DataFrame"""
         self._validate_size(chunk_size, "chunk_size")
+        columns = normalize_columns(columns)
         if not isinstance(sheet, str) or not sheet:
             raise ValueError("sheet должен быть непустой строкой")
 
@@ -89,6 +92,7 @@ class XlsxSource:
             with closing(worksheet.iter_rows(values_only=True)) as rows:
                 first_row = next(rows, None)
                 if first_row is None:
+                    selected_names([], columns, self.path)
                     yield pd.DataFrame()
                     return
                 header = list(first_row)
@@ -103,6 +107,9 @@ class XlsxSource:
                 if len(set(names)) != len(names):
                     raise ValueError("Названия столбцов должны быть уникальными")
 
+                output_names = selected_names(names, columns, self.path)
+                positions = [names.index(name) for name in output_names]
+
                 batch = []
                 emitted = False
                 for row_number, row in enumerate(rows, start=2):
@@ -113,11 +120,11 @@ class XlsxSource:
                     # Короткие строки дополняем пропусками до ширины таблицы
                     values = list(row[:len(names)])
                     values.extend([None] * (len(names) - len(values)))
-                    batch.append(values)
+                    batch.append([values[index] for index in positions])
                     if len(batch) == chunk_size:
-                        yield pd.DataFrame(batch, columns=names)
+                        yield pd.DataFrame(batch, columns=output_names)
                         emitted = True
                         batch = []
 
                 if batch or not emitted:
-                    yield pd.DataFrame(batch, columns=names)
+                    yield pd.DataFrame(batch, columns=output_names)

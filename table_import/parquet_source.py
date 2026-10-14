@@ -1,6 +1,7 @@
 """Порционное чтение одного локального Parquet-файла"""
 
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
+from .selection import normalize_columns, selected_names
 from contextlib import closing, contextmanager
 from pathlib import Path
 
@@ -101,14 +102,18 @@ class ParquetSource:
 
     def iter_chunks(
         self, chunk_size: int = 1000, *, sheet: str | None = None,
+        columns: Sequence[str] | None = None,
     ) -> Generator[pd.DataFrame, None, None]:
         self._validate_size(chunk_size, "chunk_size")
         self._check_sheet(sheet)
+        columns = normalize_columns(columns)
         with self._open_file() as parquet:
+            names = selected_names(parquet.schema_arrow.names, columns, self.path)
             emitted = False
-            with closing(parquet.iter_batches(batch_size=chunk_size, use_threads=False)) as batches:
+            with closing(parquet.iter_batches(batch_size=chunk_size, columns=names, use_threads=False)) as batches:
                 for batch in batches:
                     emitted = True
-                    yield self._to_frame(batch)
+                    yield self._to_frame(batch).loc[:, names]
             if not emitted:
-                yield self._to_frame(pa.Table.from_batches([], schema=parquet.schema_arrow))
+                schema = pa.schema([parquet.schema_arrow.field(name) for name in names])
+                yield self._to_frame(pa.Table.from_batches([], schema=schema))

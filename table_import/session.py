@@ -1,6 +1,7 @@
 """Управление импортом независимо от формата источника."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from .selection import normalize_columns
 import pandas as pd
 from .conversion import SUPPORTED_DTYPES, convert_series
 from .exceptions import (ImportConfigurationError, ImportStateError, SourceReadError, TypeConversionError,)
@@ -17,6 +18,7 @@ class ImportSession:
     def __init__(
         self, source: TableSource, sheet: str, chunk_size: int = 1000,
         dtype: Mapping[str, str] | None = None, *, metadata: SheetMetadata | None = None,
+        columns: Sequence[str] | None = None,
     ):
         if not isinstance(sheet, str) or not sheet:
             raise ImportConfigurationError("sheet должен быть непустой строкой")
@@ -25,6 +27,11 @@ class ImportSession:
         if dtype is not None and not isinstance(dtype, Mapping):
             raise ImportConfigurationError("dtype должен быть словарём: столбец → тип")
         self._dtype = dict(dtype or {})
+        self._selected_columns = normalize_columns(columns)
+        if self._selected_columns is not None:
+            excluded = [name for name in self._dtype if name not in self._selected_columns]
+            if excluded:
+                raise ImportConfigurationError(f"dtype содержит невыбранные столбцы: {excluded}")
         for column, target in self._dtype.items():
             if not isinstance(column, str) or not isinstance(target, str) or target not in SUPPORTED_DTYPES:
                 raise ImportConfigurationError(
@@ -96,8 +103,11 @@ class ImportSession:
             raise ImportStateError(f"Нельзя продолжить сессию в состоянии {self._status}")
         try:
             if self._reader is None:
+                options = {}
+                if self._selected_columns is not None:
+                    options["columns"] = self._selected_columns
                 self._reader = self._source.iter_chunks(
-                    sheet=self._sheet, chunk_size=self._chunk_size,
+                    sheet=self._sheet, chunk_size=self._chunk_size, **options,
                 )
             self._status = "running"
             try:

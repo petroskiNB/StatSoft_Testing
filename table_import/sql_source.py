@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import pandas as pd
 from .exceptions import SourceReadError
+from .selection import normalize_columns, selected_names
 from .models import ColumnMetadata, SheetMetadata
 
 
@@ -120,13 +121,14 @@ class SqlSource:
 
     def iter_chunks(
         self, chunk_size: int = 1000, *, sheet: str | None = None,
+        columns: Sequence[str] | None = None,
     ) -> Generator[pd.DataFrame, None, None]:
         """Читает следующий фрагмент одного запроса"""
         self._validate_size(chunk_size, "chunk_size")
         self._check_sheet(sheet)
-        yield from self._read_chunks(chunk_size)
+        yield from self._read_chunks(chunk_size, columns=normalize_columns(columns))
 
-    def _read_chunks(self, chunk_size: int, limit: int | None = None) -> Generator[pd.DataFrame, None, None]:
+    def _read_chunks(self, chunk_size: int, limit: int | None = None, *, columns=None) -> Generator[pd.DataFrame, None, None]:
         with self._open_connection("чтение SQLite") as connection:
             if self.table is not None:
                 self._check_table(connection)
@@ -152,15 +154,18 @@ class SqlSource:
                         self.path, f"чтение листа '{self.sheet_name}'",
                         "Названия столбцов результата повторяются; задайте уникальные псевдонимы AS"
                     )
+                output_names = selected_names(names, columns, self.path)
+                positions = [names.index(name) for name in output_names]
                 emitted = False
                 remaining = limit
                 while True:
                     rows = cursor.fetchmany(chunk_size if remaining is None else min(chunk_size, remaining))
                     if not rows:
                         if not emitted:
-                            yield pd.DataFrame(columns=names)
+                            yield pd.DataFrame(columns=output_names)
                         break
-                    yield pd.DataFrame.from_records(rows, columns=names)
+                    selected_rows = [tuple(row[index] for index in positions) for row in rows]
+                    yield pd.DataFrame.from_records(selected_rows, columns=output_names)
                     emitted = True
                     if remaining is not None:
                         remaining -= len(rows)

@@ -1,6 +1,7 @@
 # Для csv с заголовком на первой строке
 
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
+from .selection import normalize_columns, selected_names
 import codecs
 import csv
 from io import StringIO
@@ -125,20 +126,24 @@ class CsvSource:
 
     def iter_chunks(
         self, chunk_size: int = 1000, *, sheet: str | None = None,
+        columns: Sequence[str] | None = None,
     ) -> Generator[pd.DataFrame, None, None]:
         """ 
         Выдаёт порции DataFrame. при досрочном выходе вызовите close() 
         """
         self._validate_size(chunk_size, "chunk_size")
         self._check_sheet(sheet)
+        columns = normalize_columns(columns)
         try:
             with pd.read_csv(
                 self.path,
                 sep=self.delimiter,
                 encoding=self.encoding,
-                chunksize=chunk_size
+                chunksize=chunk_size,
+                usecols=list(columns) if columns is not None else None,
             ) as reader:
                 for chunk in reader:
-                    yield chunk
+                    names = selected_names(chunk.columns, columns, self.path)
+                    yield chunk.loc[:, names]
         except (OSError, UnicodeError, LookupError, ValueError, pd.errors.ParserError) as exc:
             raise SourceReadError(self.path, "чтение CSV порциями", str(exc)) from exc
